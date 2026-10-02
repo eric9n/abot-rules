@@ -222,6 +222,89 @@ async function handleRulesAPI(request, env, url) {
   return Response.json({ ok: false }, { status: 404 });
 }
 
+const MCP_TOOLS = [
+  {
+    name: "create_rule",
+    description: "创建规则：trigger（事件类型）+ condition（AI prompt）+ actions（webhook/发事件）",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        trigger_type: { type: "string", description: "如 email.received，支持 email.* 通配" },
+        condition: { type: "object", description: "{ai_prompt: '...'}，可空" },
+        actions: { type: "array", items: { type: "object" } },
+      },
+      required: ["name", "trigger_type", "actions"],
+    },
+  },
+  {
+    name: "list_rules",
+    description: "列出所有规则",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_rule",
+    description: "查一条规则",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "update_rule",
+    description: "更新规则",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" }, name: { type: "string" },
+        trigger_type: { type: "string" }, condition: { type: "object" },
+        actions: { type: "array" }, enabled: { type: "boolean" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "delete_rule",
+    description: "删除规则",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+];
+
+async function callMcpTool(name, args, env) {
+  await ensureTables(env);
+  if (name === "create_rule") {
+    const id = newId("rule");
+    await env.DB.prepare(
+      "INSERT INTO rules (id, name, trigger_type, condition_json, actions_json, enabled) VALUES (?,?,?,?,?,?)"
+    ).bind(id, args.name, args.trigger_type, JSON.stringify(args.condition || {}),
+      JSON.stringify(args.actions || []), 1).run();
+    return { id };
+  }
+  if (name === "list_rules") {
+    const rows = await env.DB.prepare("SELECT * FROM rules ORDER BY created_at DESC").all();
+    return { rules: rows.results };
+  }
+  if (name === "get_rule") {
+    const row = await env.DB.prepare("SELECT * FROM rules WHERE id = ?").bind(args.id).first();
+    return row ? { rule: row } : { error: "not found" };
+  }
+  if (name === "update_rule") {
+    const sets = [], params = [];
+    if (args.name !== undefined) { sets.push("name=?"); params.push(args.name); }
+    if (args.trigger_type !== undefined) { sets.push("trigger_type=?"); params.push(args.trigger_type); }
+    if (args.condition !== undefined) { sets.push("condition_json=?"); params.push(JSON.stringify(args.condition)); }
+    if (args.actions !== undefined) { sets.push("actions_json=?"); params.push(JSON.stringify(args.actions)); }
+    if (args.enabled !== undefined) { sets.push("enabled=?"); params.push(args.enabled ? 1 : 0); }
+    if (sets.length === 0) return { ok: false, error: "nothing to update" };
+    sets.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+    params.push(args.id);
+    await env.DB.prepare(`UPDATE rules SET ${sets.join(",")} WHERE id=?`).bind(...params).run();
+    return { ok: true };
+  }
+  if (name === "delete_rule") {
+    await env.DB.prepare("DELETE FROM rules WHERE id = ?").bind(args.id).run();
+    return { ok: true };
+  }
+  throw new Error(`unknown tool: ${name}`);
+}
+
 export default {
   async queue(batch, env) {
     await ensureTables(env);
@@ -241,6 +324,30 @@ export default {
     await ensureTables(env);
     if (url.pathname === "/health") {
       return Response.json({ ok: true, service: "abot-rules" });
+    }
+    // MCP endpoint
+    if (url.pathname === "/mcp" && request.method === "POST") {
+      const message = await request.json();
+      const id = message.id ?? null;
+      try {
+        if (message.method === "initialize") {
+          return Response.json({ jsonrpc: "2.0", id,
+            result: { protocolVersion: "2025-06-18", capabilities: { tools: {} },
+              serverInfo: { name: "abot-rules-mcp", version: "1.0.0" } } });
+        }
+        if (message.method === "tools/list") {
+          return Response.json({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
+        }
+        if (message.method === "tools/call") {
+          const { name, arguments: args } = message.params || {};
+          const result = await callMcpTool(name, args || {}, env);
+          return Response.json({ jsonrpc: "2.0", id,
+            result: { content: [{ type: "text", text: JSON.stringify(result) }] } });
+        }
+        return Response.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+      } catch (e) {
+        return Response.json({ jsonrpc: "2.0", id, error: { code: -32603, message: e.message } });
+      }
     }
     if (url.pathname.startsWith("/rules")) {
       return handleRulesAPI(request, env, url);
