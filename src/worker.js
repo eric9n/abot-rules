@@ -325,8 +325,12 @@ export default {
     if (url.pathname === "/health") {
       return Response.json({ ok: true, service: "abot-rules" });
     }
-    // MCP endpoint
+    // MCP endpoint（内部鉴权：只接受网关的 X-Internal-Token）
     if (url.pathname === "/mcp" && request.method === "POST") {
+      const it = request.headers.get("X-Internal-Token") || "";
+      if (!env.INTERNAL_TOKEN || it !== env.INTERNAL_TOKEN) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
       const message = await request.json();
       const id = message.id ?? null;
       try {
