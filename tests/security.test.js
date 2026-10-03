@@ -95,56 +95,32 @@ test("requireAuth: checks bearer token", () => {
   assert.equal(requireAuth(none, env), false);
 });
 
-// ---------- /mcp auth (token optional, owner required) ----------
+// ---------- /mcp auth (owner required, no internal token) ----------
 function mcpReq(headers) {
   return new Request("https://x/mcp", { method: "POST", headers });
 }
 
-test("authorizeMcp: no token is allowed when owner email is present", () => {
-  const binding = authorizeMcp(
-    mcpReq({ "X-Abot-Owner-Email": "a@x.com" }),
-    { INTERNAL_TOKEN: "sekret" },
-  );
+test("authorizeMcp: owner email is enough; X-Internal-Token is ignored", () => {
+  const binding = authorizeMcp(mcpReq({ "X-Abot-Owner-Email": "a@x.com" }));
   assert.equal(binding.ok, true);
   assert.equal(binding.ownerEmail, "a@x.com");
-  // Service Bindings path also works when the secret is unset.
-  assert.equal(authorizeMcp(mcpReq({ "X-Abot-Owner-Email": "a@x.com" }), {}).ok, true);
+
+  const withToken = authorizeMcp(mcpReq({
+    "X-Internal-Token": "anything",
+    "X-Abot-Owner-Email": "a@x.com",
+  }));
+  assert.equal(withToken.ok, true);
+  assert.equal(withToken.ownerEmail, "a@x.com");
 });
 
-test("authorizeMcp: a presented token must match and fails closed", () => {
-  const env = { INTERNAL_TOKEN: "sekret" };
-  const ok = authorizeMcp(mcpReq({
-    "X-Internal-Token": "sekret",
-    "X-Abot-Owner-Email": "a@x.com",
-  }), env);
-  assert.equal(ok.ok, true);
-  assert.equal(ok.ownerEmail, "a@x.com");
-
-  const bad = authorizeMcp(mcpReq({
-    "X-Internal-Token": "wrong",
-    "X-Abot-Owner-Email": "a@x.com",
-  }), env);
-  assert.equal(bad.ok, false);
-  assert.equal(bad.status, 401);
-  assert.equal(bad.error, "unauthorized");
-
-  const unset = authorizeMcp(mcpReq({
-    "X-Internal-Token": "sekret",
-    "X-Abot-Owner-Email": "a@x.com",
-  }), {});
-  assert.equal(unset.ok, false);
-  assert.equal(unset.status, 401);
-});
-
-test("authorizeMcp: X-Abot-Owner-Email is required with or without a token", () => {
-  const env = { INTERNAL_TOKEN: "sekret" };
+test("authorizeMcp: X-Abot-Owner-Email is required", () => {
   for (const headers of [
-    { "X-Internal-Token": "sekret" },
     {},
+    { "X-Internal-Token": "sekret" },
     { "X-Abot-Owner-Email": "   " },
     { "X-Internal-Token": "sekret", "X-Abot-Owner-Email": "" },
   ]) {
-    const r = authorizeMcp(mcpReq(headers), env);
+    const r = authorizeMcp(mcpReq(headers));
     assert.equal(r.ok, false, JSON.stringify(headers));
     assert.equal(r.status, 401);
     assert.equal(r.error, "X-Abot-Owner-Email required");

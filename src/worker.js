@@ -291,20 +291,11 @@ function requireAuth(request, env) {
   return got === `Bearer ${token}`;
 }
 
-// /mcp auth for two callers:
-// - Gateway via Service Bindings (env.BACKEND_*.fetch) sends no
-//   X-Internal-Token. Absence is trusted.
-// - Direct custom-domain calls still send X-Internal-Token. A present token
-//   must match INTERNAL_TOKEN; a mismatch or an unset secret fails closed.
+// /mcp is only reachable from the gateway via Service Bindings. Public
+// hostnames are removed, so there is no X-Internal-Token check.
 // X-Abot-Owner-Email stays mandatory — the gateway always sets it, and
-// tokenless binding calls must not create unscoped rules.
-function authorizeMcp(request, env) {
-  const presented = request.headers.get("X-Internal-Token");
-  if (presented) {
-    if (!env.INTERNAL_TOKEN || presented !== env.INTERNAL_TOKEN) {
-      return { ok: false, status: 401, error: "unauthorized" };
-    }
-  }
+// binding calls must not create unscoped rules.
+function authorizeMcp(request) {
   const ownerEmail = request.headers.get("X-Abot-Owner-Email");
   if (!ownerEmail || !ownerEmail.trim()) {
     return { ok: false, status: 401, error: "X-Abot-Owner-Email required" };
@@ -515,9 +506,9 @@ export default {
     if (url.pathname === "/health") {
       return Response.json({ ok: true, service: "abot-rules" });
     }
-    // MCP endpoint: binding calls (no token) or custom-domain calls (token).
+    // MCP endpoint: gateway Service Binding only. Owner email required.
     if (url.pathname === "/mcp" && request.method === "POST") {
-      const auth = authorizeMcp(request, env);
+      const auth = authorizeMcp(request);
       if (!auth.ok) {
         return Response.json({ error: auth.error }, { status: auth.status });
       }
