@@ -291,6 +291,27 @@ function requireAuth(request, env) {
   return got === `Bearer ${token}`;
 }
 
+// /mcp auth for two callers:
+// - Gateway via Service Bindings (env.BACKEND_*.fetch) sends no
+//   X-Internal-Token. Absence is trusted.
+// - Direct custom-domain calls still send X-Internal-Token. A present token
+//   must match INTERNAL_TOKEN; a mismatch or an unset secret fails closed.
+// X-Abot-Owner-Email stays mandatory — the gateway always sets it, and
+// tokenless binding calls must not create unscoped rules.
+function authorizeMcp(request, env) {
+  const presented = request.headers.get("X-Internal-Token");
+  if (presented) {
+    if (!env.INTERNAL_TOKEN || presented !== env.INTERNAL_TOKEN) {
+      return { ok: false, status: 401, error: "unauthorized" };
+    }
+  }
+  const ownerEmail = request.headers.get("X-Abot-Owner-Email");
+  if (!ownerEmail || !ownerEmail.trim()) {
+    return { ok: false, status: 401, error: "X-Abot-Owner-Email required" };
+  }
+  return { ok: true, ownerEmail };
+}
+
 async function handleRulesAPI(request, env, url) {
   if (!requireAuth(request, env)) {
     return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -471,6 +492,7 @@ async function callMcpTool(name, args, env, ownerEmail) {
 export {
   newId, isWebhookUrlAllowed, triggerMatches, eventTypeMatches,
   ruleAppliesToEvent, validateActions, validateRuleInput, requireAuth,
+  authorizeMcp,
 };
 
 export default {
@@ -493,11 +515,11 @@ export default {
     if (url.pathname === "/health") {
       return Response.json({ ok: true, service: "abot-rules" });
     }
-    // MCP endpoint（内部鉴权：只接受网关的 X-Internal-Token）
+    // MCP endpoint: binding calls (no token) or custom-domain calls (token).
     if (url.pathname === "/mcp" && request.method === "POST") {
-      const it = request.headers.get("X-Internal-Token") || "";
-      if (!env.INTERNAL_TOKEN || it !== env.INTERNAL_TOKEN) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
+      const auth = authorizeMcp(request, env);
+      if (!auth.ok) {
+        return Response.json({ error: auth.error }, { status: auth.status });
       }
       const message = await request.json();
       const id = message.id ?? null;
@@ -512,9 +534,8 @@ export default {
         }
         if (message.method === "tools/call") {
           const { name, arguments: args } = message.params || {};
-          const ownerEmail = request.headers.get("X-Abot-Owner-Email") || null;
           try {
-            const result = await callMcpTool(name, args || {}, env, ownerEmail);
+            const result = await callMcpTool(name, args || {}, env, auth.ownerEmail);
             return Response.json({ jsonrpc: "2.0", id,
               result: { content: [{ type: "text", text: JSON.stringify(result) }] } });
           } catch (e) {

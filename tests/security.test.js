@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   newId, isWebhookUrlAllowed, triggerMatches, eventTypeMatches,
   ruleAppliesToEvent, validateActions, validateRuleInput, requireAuth,
+  authorizeMcp,
 } from "../src/worker.js";
 
 // ---------- SSRF allowlist ----------
@@ -92,6 +93,62 @@ test("requireAuth: checks bearer token", () => {
   assert.equal(requireAuth(ok, env), true);
   assert.equal(requireAuth(bad, env), false);
   assert.equal(requireAuth(none, env), false);
+});
+
+// ---------- /mcp auth (token optional, owner required) ----------
+function mcpReq(headers) {
+  return new Request("https://x/mcp", { method: "POST", headers });
+}
+
+test("authorizeMcp: no token is allowed when owner email is present", () => {
+  const binding = authorizeMcp(
+    mcpReq({ "X-Abot-Owner-Email": "a@x.com" }),
+    { INTERNAL_TOKEN: "sekret" },
+  );
+  assert.equal(binding.ok, true);
+  assert.equal(binding.ownerEmail, "a@x.com");
+  // Service Bindings path also works when the secret is unset.
+  assert.equal(authorizeMcp(mcpReq({ "X-Abot-Owner-Email": "a@x.com" }), {}).ok, true);
+});
+
+test("authorizeMcp: a presented token must match and fails closed", () => {
+  const env = { INTERNAL_TOKEN: "sekret" };
+  const ok = authorizeMcp(mcpReq({
+    "X-Internal-Token": "sekret",
+    "X-Abot-Owner-Email": "a@x.com",
+  }), env);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.ownerEmail, "a@x.com");
+
+  const bad = authorizeMcp(mcpReq({
+    "X-Internal-Token": "wrong",
+    "X-Abot-Owner-Email": "a@x.com",
+  }), env);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.status, 401);
+  assert.equal(bad.error, "unauthorized");
+
+  const unset = authorizeMcp(mcpReq({
+    "X-Internal-Token": "sekret",
+    "X-Abot-Owner-Email": "a@x.com",
+  }), {});
+  assert.equal(unset.ok, false);
+  assert.equal(unset.status, 401);
+});
+
+test("authorizeMcp: X-Abot-Owner-Email is required with or without a token", () => {
+  const env = { INTERNAL_TOKEN: "sekret" };
+  for (const headers of [
+    { "X-Internal-Token": "sekret" },
+    {},
+    { "X-Abot-Owner-Email": "   " },
+    { "X-Internal-Token": "sekret", "X-Abot-Owner-Email": "" },
+  ]) {
+    const r = authorizeMcp(mcpReq(headers), env);
+    assert.equal(r.ok, false, JSON.stringify(headers));
+    assert.equal(r.status, 401);
+    assert.equal(r.error, "X-Abot-Owner-Email required");
+  }
 });
 
 // ---------- matching (regression) ----------
