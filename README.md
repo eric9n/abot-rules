@@ -34,10 +34,15 @@ npm run deploy         # 正式部署到 Cloudflare 账号里的 abot-rules Work
 
 | 字段 | 值 |
 |---|---|
-| Production branch | `main` |
-| Build command | `npm ci` |
+| Git branch（生产分支） | `main` |
+| Build command | 留空（Workers Builds 会按 `package-lock.json` 自动安装依赖） |
 | Deploy command | `npm run deploy` |
-| Non-production branch deploy command | `npm run deploy:check` |
+| Preview command | `npm run deploy:check` |
+| Root directory | 留空（`/`） |
+| API token | 默认自动生成的即可；需包含 Queues 编辑权限 |
+| Build variables and secrets | 不需要 |
+
+Preview command 不能用默认的 `npx wrangler preview`：Preview URL 是公网地址，会让 `/mcp` 暴露在公网上。
 
 脚本会通过 `WORKERS_CI=1` 识别 Workers Builds 环境，并使用其注入的 `WORKERS_CI_BRANCH`/`WORKERS_CI_COMMIT_SHA`。
 
