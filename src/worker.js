@@ -14,7 +14,16 @@ function newId(prefix) {
   return `${prefix}_${Date.now().toString(36)}${rand}`;
 }
 
-async function ensureTables(env) {
+let tablesReady = null;
+
+function ensureTables(env) {
+  if (!tablesReady) {
+    tablesReady = createTables(env).catch(e => { tablesReady = null; throw e; });
+  }
+  return tablesReady;
+}
+
+async function createTables(env) {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS rules (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, trigger_type TEXT NOT NULL,
     condition_json TEXT, actions_json TEXT NOT NULL,
@@ -287,8 +296,22 @@ function requireAuth(request, env) {
   const token = env.RULES_API_TOKEN;
   // fail closed: no token configured => deny everything (never fail open)
   if (!token) return false;
-  const got = request.headers.get("Authorization") || "";
-  return got === `Bearer ${token}`;
+  const got = new TextEncoder().encode(request.headers.get("Authorization") || "");
+  const want = new TextEncoder().encode(`Bearer ${token}`);
+  let diff = got.length ^ want.length;
+  for (let i = 0; i < want.length; i++) diff |= (got[i] ?? 0) ^ want[i];
+  return diff === 0;
+}
+
+async function readJson(request) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    throw new UserError("invalid JSON body");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new UserError("JSON body must be an object");
+  return body;
 }
 
 // /mcp is only reachable from the gateway via Service Bindings. Public
@@ -310,7 +333,7 @@ async function handleRulesAPI(request, env, url) {
   const path = url.pathname;
 
   if (path === "/rules" && request.method === "POST") {
-    const body = await request.json();
+    const body = await readJson(request);
     let triggerType;
     try {
       triggerType = validateRuleInput(body);
@@ -340,7 +363,7 @@ async function handleRulesAPI(request, env, url) {
       return row ? Response.json({ ok: true, rule: row }) : Response.json({ ok: false }, { status: 404 });
     }
     if (request.method === "PUT") {
-      const body = await request.json();
+      const body = await readJson(request);
       const sets = [], params = [];
       try {
         if (body.name !== undefined) {
@@ -428,6 +451,12 @@ async function callMcpTool(name, args, env, ownerEmail) {
   const owner = ownerEmail || null;
   const scope = owner ? " AND (owner_email IS NULL OR owner_email = ?)" : "";
   const scopeParams = owner ? [owner] : [];
+  // Legacy NULL-owner rules are shared, so they are read-only over MCP.
+  const writeScope = owner ? " AND owner_email = ?" : "";
+  if (["get_rule", "update_rule", "delete_rule"].includes(name) &&
+      (typeof args.id !== "string" || !args.id)) {
+    throw new UserError("id is required");
+  }
   if (name === "create_rule") {
     const triggerType = validateRuleInput(args);
     const id = newId("rule");
@@ -468,12 +497,12 @@ async function callMcpTool(name, args, env, ownerEmail) {
     if (sets.length === 0) return { ok: false, error: "nothing to update" };
     sets.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')");
     params.push(args.id, ...scopeParams);
-    const r = await env.DB.prepare(`UPDATE rules SET ${sets.join(",")} WHERE id=?${scope}`).bind(...params).run();
+    const r = await env.DB.prepare(`UPDATE rules SET ${sets.join(",")} WHERE id=?${writeScope}`).bind(...params).run();
     if (!r.meta || r.meta.changes === 0) return { ok: false, error: "not found" };
     return { ok: true };
   }
   if (name === "delete_rule") {
-    const r = await env.DB.prepare(`DELETE FROM rules WHERE id = ?${scope}`).bind(args.id, ...scopeParams).run();
+    const r = await env.DB.prepare(`DELETE FROM rules WHERE id = ?${writeScope}`).bind(args.id, ...scopeParams).run();
     if (!r.meta || r.meta.changes === 0) return { ok: false, error: "not found" };
     return { ok: true };
   }
@@ -512,8 +541,13 @@ export default {
       if (!auth.ok) {
         return Response.json({ error: auth.error }, { status: auth.status });
       }
-      const message = await request.json();
-      const id = message.id ?? null;
+      let message;
+      try {
+        message = await request.json();
+      } catch {
+        return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+      }
+      const id = message?.id ?? null;
       try {
         if (message.method === "initialize") {
           return Response.json({ jsonrpc: "2.0", id,
@@ -544,11 +578,21 @@ export default {
       }
     }
     if (url.pathname.startsWith("/rules")) {
-      return handleRulesAPI(request, env, url);
+      try {
+        return await handleRulesAPI(request, env, url);
+      } catch (e) {
+        if (e && e.userFacing) return Response.json({ ok: false, error: e.message }, { status: 400 });
+        throw e;
+      }
     }
     if (url.pathname === "/webhooks" && request.method === "POST") {
       if (!requireAuth(request, env)) return Response.json({ ok: false }, { status: 401 });
-      const body = await request.json();
+      let body;
+      try {
+        body = await readJson(request);
+      } catch (e) {
+        return Response.json({ ok: false, error: e.message }, { status: 400 });
+      }
       if (!body.url || !isWebhookUrlAllowed(body.url)) {
         return Response.json({ ok: false, error: "url not allowed" }, { status: 400 });
       }
