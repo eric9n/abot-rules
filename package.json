@@ -1,7 +1,17 @@
 {
   "name": "abot-rules",
   "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test \"tests/**/*.test.js\"",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:check": "node scripts/deploy.mjs --check"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0"
   }
 }

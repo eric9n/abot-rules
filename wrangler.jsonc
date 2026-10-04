@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "abot-rules",
+  "main": "src/worker.js",
+  "account_id": "0ca1c34bb7bdba377459d8a72b44e0b8",
+  "compatibility_date": "2026-09-01",
+
+  // /mcp trusts X-Abot-Owner-Email without a token, so the Worker must only
+  // be reachable through the abot-gateway Service Binding (BACKEND_RULES).
+  // Never enable workers.dev, preview URLs, routes or custom domains here.
+  "workers_dev": false,
+  "preview_urls": false,
+
+  "observability": { "enabled": true },
+
+  "ai": { "binding": "AI" },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "abot-data",
+      "database_id": "bb648d2d-e0e6-4d42-87ea-ed2e50cfcc3f"
+    }
+  ],
+
+  "queues": {
+    "consumers": [
+      {
+        "queue": "rule-events",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "rule-events-dlq"
+      }
+    ]
+  }
+
+  // Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+  //   RULES_API_TOKEN  Bearer token for /rules and /webhooks (fail-closed if unset)
+}
