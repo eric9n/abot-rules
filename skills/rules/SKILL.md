@@ -21,9 +21,13 @@ MCP 服务标识（`initialize` 返回）：`serverInfo.name` 为 `abot-rules-mc
 
 经网关 **abot.run**，用 **abot-mcp** CLI 调用。不要直连 Worker。
 
-网关通过 Service Binding 把请求转到本服务的 `POST /mcp`，并设置 `X-Abot-Owner-Email`。该头必填：缺失或空白时返回 401，错误信息为 `X-Abot-Owner-Email required`。本服务不校验 `X-Internal-Token`。
+网关通过 Service Binding 把请求转到本服务的 `POST /mcp`，并设置 `X-Abot-Owner-Email`。该头必填：缺失或空白时返回 401，错误信息为 `X-Abot-Owner-Email required`；不是 `x@y` 形式（含空白、超过 320 字符）时返回 401 `X-Abot-Owner-Email invalid`。本服务不校验 `X-Internal-Token`。
 
 `create_rule` 把网关传入的 owner email 写入规则。`list_rules`、`get_rule` 只看到 `owner_email` 为空（历史规则）或等于当前 owner 的规则；`update_rule`、`delete_rule` 只能操作 `owner_email` 等于当前 owner 的规则，历史规则对所有人只读。
+
+触发范围：带 owner 的规则只在事件的 `owner_email` 与之相同时触发；事件没有 `owner_email` 时只有历史规则（owner 为空）会触发。规则产生的衍生事件（`emit_event`）写入时带上该 owner。
+
+Webhook `secret` 只写不读：`list_rules`、`get_rule` 返回的 webhook 动作里没有 `secret`，改为 `secret_set: true/false`。`update_rule` 传回 `secret_set: true` 且不带 `secret` 的 webhook 动作时，保留同一 URL 原有的 secret；URL 变了则不会沿用旧 secret，需要重新提供。
 
 ## 使用示例
 
@@ -40,7 +44,7 @@ MCP 服务标识（`initialize` 返回）：`serverInfo.name` 为 `abot-rules-mc
 }
 ```
 
-创建一条规则。`name`、`trigger_type`、`actions` 必填。`actions` 在运行时还要满足：非空数组、最多 20 条；`webhook` 要有允许的 `url`（公网 https，不能带账号密码，不能指向本机、内网或链路本地地址），`secret` 若出现必须是字符串；`emit_event` 要有匹配 `^[A-Za-z0-9.*_\-]{1,200}$` 的 `event_type`。`name` 最长 200 字符，`trigger_type` 用同一套字符规则。
+创建一条规则。`name`、`trigger_type`、`actions` 必填。`actions` 在运行时还要满足：非空数组、最多 20 条；`webhook` 要有允许的 `url`（公网 https 且端口为 443，不能带账号密码，不能指向本机、内网、链路本地、CGNAT、文档/测试保留段或组播地址），`secret` 若出现必须是字符串；`emit_event` 要有匹配 `^[A-Za-z0-9.*_\-]{1,200}$` 的 `event_type`。`name` 最长 200 字符，`trigger_type` 用同一套字符规则。
 
 ```json
 {
@@ -95,4 +99,4 @@ MCP 服务标识（`initialize` 返回）：`serverInfo.name` 为 `abot-rules-mc
 }
 ```
 
-`get_rule` 找不到时返回 `{ "error": "not found" }`。`update_rule` 没有可更新字段时返回 `{ "ok": false, "error": "nothing to update" }`；记录不在当前 owner 范围内时，更新和删除返回 `{ "ok": false, "error": "not found" }`。校验失败（用户可见错误）以 JSON-RPC 错误码 `-32602` 返回。
+`get_rule` 找不到时返回 `{ "error": "not found" }`。`update_rule` 没有可更新字段时返回 `{ "ok": false, "error": "nothing to update" }`；记录不在当前 owner 范围内时，更新和删除返回 `{ "ok": false, "error": "not found" }`。校验失败（用户可见错误，包括 `get_rule`/`update_rule`/`delete_rule` 缺少 `id`）以 JSON-RPC 错误码 `-32602` 返回；请求体不是合法 JSON 时返回 `-32700`。

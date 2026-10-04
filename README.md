@@ -11,8 +11,10 @@
 **唯一的部署方式是 `npm run deploy`**（`scripts/deploy.mjs`）。不要在 Cloudflare 控制台上传/编辑代码，也不要直接运行 `wrangler deploy`。
 
 ```bash
-npm ci
-npm run deploy:check   # 预检 + 测试 + wrangler dry-run，不需要凭据，不会部署
+npm ci                 # 安装依赖（含锁定版本的 wrangler）
+npm test               # 单元测试
+npm run build          # 打包到 dist/（wrangler dry-run），不需要凭据
+npm run deploy:check   # 预检 + 测试 + 打包，不需要凭据，不会部署
 npm run deploy         # 正式部署到 Cloudflare 账号里的 abot-rules Worker
 ```
 
@@ -48,3 +50,10 @@ npm run deploy         # 正式部署到 Cloudflare 账号里的 abot-rules Work
 用 `npx wrangler secret put <NAME>` 设置，不进仓库：
 
 - `RULES_API_TOKEN`：`/rules`、`/webhooks` 的 Bearer token；未设置时这些接口全部 401（fail closed）。
+
+```bash
+openssl rand -hex 32 | npx wrangler secret put RULES_API_TOKEN
+npx wrangler secret delete INTERNAL_TOKEN   # 历史遗留，代码已不再使用
+```
+
+注意 `secret put`/`secret delete` 会立即生成并上线一个新版本。
