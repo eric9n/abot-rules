@@ -23,7 +23,7 @@ MCP 服务标识（`initialize` 返回）：`serverInfo.name` 为 `abot-rules-mc
 
 网关通过 Service Binding 把请求转到本服务的 `POST /mcp`，并设置 `X-Abot-Owner-Email`。该头必填：缺失或空白时返回 401，错误信息为 `X-Abot-Owner-Email required`。本服务不校验 `X-Internal-Token`。
 
-`create_rule` 把网关传入的 owner email 写入规则。`list_rules`、`get_rule`、`update_rule`、`delete_rule` 只看到 `owner_email` 为空（历史规则）或等于当前 owner 的规则。
+`create_rule` 把网关传入的 owner email 写入规则。`list_rules`、`get_rule` 只看到 `owner_email` 为空（历史规则）或等于当前 owner 的规则；`update_rule`、`delete_rule` 只能操作 `owner_email` 等于当前 owner 的规则，历史规则对所有人只读。
 
 ## 使用示例
 
