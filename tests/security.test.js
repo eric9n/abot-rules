@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   newId, isWebhookUrlAllowed, triggerMatches, eventTypeMatches,
   ruleAppliesToEvent, validateActions, validateRuleInput, requireAuth,
-  authorizeMcp,
+  authorizeMcp, extractJsonObject, redactRule, carryOverSecrets,
 } from "../src/worker.js";
 
 // ---------- SSRF allowlist ----------
@@ -43,6 +43,50 @@ test("webhook url: blocks credentials, custom ports, internal suffixes", () => {
   assert.equal(isWebhookUrlAllowed(""), false);
 });
 
+test("webhook url: blocks CGNAT/benchmark/doc/multicast and v6 special ranges", () => {
+  for (const u of [
+    "https://100.64.0.1/x", "https://100.127.255.255/x", "https://198.18.0.1/x",
+    "https://192.0.2.1/x", "https://198.51.100.1/x", "https://203.0.113.1/x",
+    "https://224.0.0.1/x", "https://255.255.255.255/x",
+    "https://[::127.0.0.1]/x", "https://[ff02::1]/x", "https://[64:ff9b::7f00:1]/x",
+    "https://[2001:db8::1]/x", "https://[2002:7f00:1::]/x", "https://[febf::1]/x",
+  ]) assert.equal(isWebhookUrlAllowed(u), false, u);
+  assert.equal(isWebhookUrlAllowed("https://100.63.0.1/x"), true);
+  assert.equal(isWebhookUrlAllowed("https://[2606:4700::1111]/x"), true);
+});
+
+// ---------- AI output parsing ----------
+test("extractJsonObject: nested, prose-wrapped, invalid", () => {
+  assert.deepEqual(extractJsonObject('结果：{"pass":true,"data":{"code":"123"}} 完毕'),
+    { pass: true, data: { code: "123" } });
+  assert.deepEqual(extractJsonObject('{"s":"a}b{c","pass":false}'), { s: "a}b{c", pass: false });
+  assert.deepEqual(extractJsonObject('{bad} then {"ok":1}'), { ok: 1 });
+  assert.equal(extractJsonObject("no json"), null);
+  assert.equal(extractJsonObject(undefined), null);
+});
+
+// ---------- webhook secret redaction ----------
+test("redactRule hides webhook secrets; carryOverSecrets restores them", () => {
+  const stored = JSON.stringify([
+    { type: "webhook", url: "https://a.com/h", secret: "s1" },
+    { type: "webhook", url: "https://b.com/h" },
+    { type: "emit_event", event_type: "rule.x" },
+  ]);
+  const shown = JSON.parse(redactRule({ id: "r", actions_json: stored }).actions_json);
+  assert.equal(JSON.stringify(shown).includes("s1"), false);
+  assert.equal(shown[0].secret_set, true);
+  assert.equal(shown[1].secret_set, false);
+
+  const back = carryOverSecrets(shown, stored);
+  assert.deepEqual(back[0], { type: "webhook", url: "https://a.com/h", secret: "s1" });
+  assert.deepEqual(back[1], { type: "webhook", url: "https://b.com/h" });
+  // changing the URL must not leak the old secret to the new endpoint
+  const moved = carryOverSecrets([{ type: "webhook", url: "https://evil.com/h", secret_set: true }], stored);
+  assert.equal(moved[0].secret, undefined);
+  // explicit new secret wins
+  assert.equal(carryOverSecrets([{ type: "webhook", url: "https://a.com/h", secret: "s2", secret_set: true }], stored)[0].secret, "s2");
+});
+
 // ---------- rule input validation ----------
 test("validateActions: accepts good actions", () => {
   validateActions([
@@ -71,9 +115,10 @@ test("validateRuleInput: requires name/trigger/actions", () => {
 test("ruleAppliesToEvent: scoping matrix", () => {
   // legacy global rule fires on everything
   assert.equal(ruleAppliesToEvent({ owner_email: null }, { owner_email: "a@x" }), true);
-  // events without owner (current abot-data behavior): everything fires
-  assert.equal(ruleAppliesToEvent({ owner_email: "a@x" }, { owner_email: null }), true);
-  assert.equal(ruleAppliesToEvent({ owner_email: "a@x" }, {}), true);
+  assert.equal(ruleAppliesToEvent({ owner_email: null }, {}), true);
+  // owned rules never see owner-less events (other users' data)
+  assert.equal(ruleAppliesToEvent({ owner_email: "a@x" }, { owner_email: null }), false);
+  assert.equal(ruleAppliesToEvent({ owner_email: "a@x" }, {}), false);
   // once events carry owner: strict match
   assert.equal(ruleAppliesToEvent({ owner_email: "a@x" }, { owner_email: "a@x" }), true);
   assert.equal(ruleAppliesToEvent({ owner_email: "a@x" }, { owner_email: "b@x" }), false);
@@ -125,6 +170,13 @@ test("authorizeMcp: X-Abot-Owner-Email is required", () => {
     assert.equal(r.status, 401);
     assert.equal(r.error, "X-Abot-Owner-Email required");
   }
+});
+
+test("authorizeMcp: rejects malformed owner email, trims whitespace", () => {
+  for (const v of ["nobody", "a b@x.com", "@x.com", "a@", `${"a".repeat(320)}@x.com`]) {
+    assert.equal(authorizeMcp(mcpReq({ "X-Abot-Owner-Email": v })).ok, false, v);
+  }
+  assert.equal(authorizeMcp(mcpReq({ "X-Abot-Owner-Email": " a@x.com " })).ownerEmail, "a@x.com");
 });
 
 // ---------- matching (regression) ----------

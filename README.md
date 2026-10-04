@@ -11,8 +11,10 @@
 **唯一的部署方式是 `npm run deploy`**（`scripts/deploy.mjs`）。不要在 Cloudflare 控制台上传/编辑代码，也不要直接运行 `wrangler deploy`。
 
 ```bash
-npm ci
-npm run deploy:check   # 预检 + 测试 + wrangler dry-run，不需要凭据，不会部署
+npm ci                 # 安装依赖（含锁定版本的 wrangler）
+npm test               # 单元测试
+npm run build          # 打包到 dist/（wrangler dry-run），不需要凭据
+npm run deploy:check   # 预检 + 测试 + 打包，不需要凭据，不会部署
 npm run deploy         # 正式部署到 Cloudflare 账号里的 abot-rules Worker
 ```
 
@@ -32,10 +34,15 @@ npm run deploy         # 正式部署到 Cloudflare 账号里的 abot-rules Work
 
 | 字段 | 值 |
 |---|---|
-| Production branch | `main` |
-| Build command | `npm ci` |
+| Git branch（生产分支） | `main` |
+| Build command | 留空（Workers Builds 会按 `package-lock.json` 自动安装依赖） |
 | Deploy command | `npm run deploy` |
-| Non-production branch deploy command | `npm run deploy:check` |
+| Preview command | `npm run deploy:check` |
+| Root directory | 留空（`/`） |
+| API token | 默认自动生成的即可；需包含 Queues 编辑权限 |
+| Build variables and secrets | 不需要 |
+
+Preview command 不能用默认的 `npx wrangler preview`：Preview URL 是公网地址，会让 `/mcp` 暴露在公网上。
 
 脚本会通过 `WORKERS_CI=1` 识别 Workers Builds 环境，并使用其注入的 `WORKERS_CI_BRANCH`/`WORKERS_CI_COMMIT_SHA`。
 
@@ -48,3 +55,10 @@ npm run deploy         # 正式部署到 Cloudflare 账号里的 abot-rules Work
 用 `npx wrangler secret put <NAME>` 设置，不进仓库：
 
 - `RULES_API_TOKEN`：`/rules`、`/webhooks` 的 Bearer token；未设置时这些接口全部 401（fail closed）。
+
+```bash
+openssl rand -hex 32 | npx wrangler secret put RULES_API_TOKEN
+npx wrangler secret delete INTERNAL_TOKEN   # 历史遗留，代码已不再使用
+```
+
+注意 `secret put`/`secret delete` 会立即生成并上线一个新版本。
